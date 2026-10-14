@@ -1,0 +1,27 @@
+database:
+  path: data/warehouse.duckdb        # можно переопределить: PAS_DB_PATH
+
+reference:
+  companies: data/reference/companies.csv   # справочник инструментов = список тикеров для загрузки
+
+load:
+  start_date: "2018-01-01"           # с какой даты грузить историю при первом запуске
+  end_date: null                     # null = до сегодняшнего дня
+  overlap_days: 5                    # перекрытие при инкрементальной догрузке (поправки провайдера)
+  timeout_sec: 30
+  pause_between_requests_sec: 0.3
+  retry:
+    attempts: 4
+    base_delay_sec: 2                # задержка растёт: 2, 4, 8 ...
+    rate_limit_delay_sec: 30         # если провайдер ответил "Too Many Requests"
+
+sources:
+  yfinance_prices: {enabled: true}
+  yfinance_news:   {enabled: true}
+  fred_macro:
+    enabled: true
+    series: [VIXCLS, DGS10]          # индекс волатильности VIX, доходность 10-летних облигаций США
+
+monitor:                             # пороги витрины мониторинга падений
+  drop_threshold: -0.05              # падение за 5 торговых дней
+  drawdown_threshold: -0.20          # просадка от максимума за ~252 торговых дня

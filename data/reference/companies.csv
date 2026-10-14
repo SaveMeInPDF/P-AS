@@ -1,0 +1,31 @@
+ticker,name,country,region,exchange,sector,currency,instrument_type
+AAPL,Apple,United States,North America,NASDAQ,Technology,USD,stock
+MSFT,Microsoft,United States,North America,NASDAQ,Technology,USD,stock
+GOOGL,Alphabet,United States,North America,NASDAQ,Communication Services,USD,stock
+AMZN,Amazon,United States,North America,NASDAQ,Consumer Cyclical,USD,stock
+META,Meta Platforms,United States,North America,NASDAQ,Communication Services,USD,stock
+NVDA,NVIDIA,United States,North America,NASDAQ,Technology,USD,stock
+TSLA,Tesla,United States,North America,NASDAQ,Consumer Cyclical,USD,stock
+JPM,JPMorgan Chase,United States,North America,NYSE,Financials,USD,stock
+V,Visa,United States,North America,NYSE,Financials,USD,stock
+MA,Mastercard,United States,North America,NYSE,Financials,USD,stock
+KO,Coca-Cola,United States,North America,NYSE,Consumer Defensive,USD,stock
+PEP,PepsiCo,United States,North America,NASDAQ,Consumer Defensive,USD,stock
+WMT,Walmart,United States,North America,NASDAQ,Consumer Defensive,USD,stock
+DIS,Walt Disney,United States,North America,NYSE,Communication Services,USD,stock
+NFLX,Netflix,United States,North America,NASDAQ,Communication Services,USD,stock
+AMD,Advanced Micro Devices,United States,North America,NASDAQ,Technology,USD,stock
+INTC,Intel,United States,North America,NASDAQ,Technology,USD,stock
+IBM,IBM,United States,North America,NYSE,Technology,USD,stock
+ORCL,Oracle,United States,North America,NYSE,Technology,USD,stock
+ADBE,Adobe,United States,North America,NASDAQ,Technology,USD,stock
+SAP.DE,SAP,Germany,Europe,XETRA,Technology,EUR,stock
+ASML.AS,ASML Holding,Netherlands,Europe,Euronext Amsterdam,Technology,EUR,stock
+HSBA.L,HSBC Holdings,United Kingdom,Europe,LSE,Financials,GBp,stock
+NESN.SW,Nestle,Switzerland,Europe,SIX,Consumer Defensive,CHF,stock
+7203.T,Toyota Motor,Japan,Asia,TSE,Consumer Cyclical,JPY,stock
+0700.HK,Tencent Holdings,Hong Kong,Asia,HKEX,Communication Services,HKD,stock
+005930.KS,Samsung Electronics,South Korea,Asia,KRX,Technology,KRW,stock
+^GSPC,S&P 500,United States,North America,INDEX,Index,USD,index
+^GDAXI,DAX,Germany,Europe,INDEX,Index,EUR,index
+^N225,Nikkei 225,Japan,Asia,INDEX,Index,JPY,index
