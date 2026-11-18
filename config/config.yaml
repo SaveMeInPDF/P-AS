@@ -1,5 +1,5 @@
-database:
-  path: data/warehouse.duckdb        # можно переопределить: PAS_DB_PATH
+storage:
+  directory: data                    # папка с CSV по слоям; можно переопределить: PAS_DATA_DIR
 
 reference:
   companies: data/reference/companies.csv   # справочник инструментов = список тикеров для загрузки

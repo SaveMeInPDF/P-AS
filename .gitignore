@@ -1,4 +1,9 @@
 data/*.duckdb
 data/*.duckdb.wal
+data/raw/
+data/ref/
+data/stg/
+data/mart/
+data/meta/
 __pycache__/
 .env

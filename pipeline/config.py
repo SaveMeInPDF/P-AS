@@ -12,8 +12,8 @@ def load_config(path=None) -> dict:
     with open(path, encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
     cfg["_root"] = str(ROOT)
-    if os.getenv("PAS_DB_PATH"):
-        cfg["database"]["path"] = os.environ["PAS_DB_PATH"]
+    if os.getenv("PAS_DATA_DIR"):
+        cfg["storage"]["directory"] = os.environ["PAS_DATA_DIR"]
     return cfg
 
 

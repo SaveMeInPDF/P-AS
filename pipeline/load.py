@@ -1,4 +1,4 @@
-"""Загрузка в слой raw: инкрементально, идемпотентно, с повторами и журналом (meta.load_log)."""
+"""Incremental, idempotent source loading with retries and a CSV load log."""
 import time
 import uuid
 from dataclasses import dataclass
@@ -6,19 +6,19 @@ from datetime import date, timedelta
 
 import pandas as pd
 
-from .db import utcnow
 from .retry import RetryExhausted, call_with_retry
 from .sources import fred_macro, yfinance_news, yfinance_prices
+from .storage import CsvStore
 
 
 @dataclass
 class Spec:
     table: str
-    entity_col: str          # столбец сущности (тикер / серия)
-    keys: tuple              # естественный ключ — основа идемпотентности
+    entity_col: str
+    keys: tuple
     fetch: callable
-    incremental: bool        # True — докачка с водяного знака; False — снимок «последних N»
-    on_conflict_update: bool # True — перезаписывать совпавшие строки; False — игнорировать
+    incremental: bool
+    on_conflict_update: bool
 
 
 SPECS = {
@@ -31,94 +31,97 @@ SPECS = {
 }
 
 
-def _q(col: str) -> str:
-    return f'"{col}"'
-
-
 def entities_for(source: str, cfg: dict, tickers: list) -> list:
     return list(cfg["sources"]["fred_macro"]["series"]) if source == "fred_macro" else tickers
 
 
-def _upsert(con, spec: Spec, df: pd.DataFrame, load_id: str) -> None:
-    df = df.drop_duplicates(subset=list(spec.keys), keep="last").copy()
-    df["_load_id"] = load_id
-    df["_loaded_at"] = utcnow()
-    cols = list(df.columns)
-    col_sql = ", ".join(_q(c) for c in cols)
-    key_sql = ", ".join(_q(c) for c in spec.keys)
-    if spec.on_conflict_update:
-        sets = ", ".join(f"{_q(c)} = EXCLUDED.{_q(c)}" for c in cols if c not in spec.keys)
-        conflict = f"ON CONFLICT ({key_sql}) DO UPDATE SET {sets}"
-    else:
-        conflict = f"ON CONFLICT ({key_sql}) DO NOTHING"
-    con.register("incoming", df)
-    try:
-        con.execute(f"INSERT INTO {spec.table} ({col_sql}) SELECT {col_sql} FROM incoming {conflict}")
-    finally:
-        con.unregister("incoming")
+def _count(store: CsvStore, spec: Spec, entity: str) -> int:
+    df = store.read_table(spec.table)
+    return int(df[spec.entity_col].astype(str).eq(str(entity)).sum())
 
 
-def _count(con, spec: Spec, entity: str) -> int:
-    return con.execute(f"SELECT count(*) FROM {spec.table} WHERE {spec.entity_col} = ?",
-                       [entity]).fetchone()[0]
+def _watermark(store: CsvStore, spec: Spec, entity: str):
+    df = store.read_table(spec.table)
+    dates = pd.to_datetime(df.loc[df[spec.entity_col].astype(str).eq(str(entity)), "date"],
+                           errors="coerce")
+    mark = dates.max()
+    return None if pd.isna(mark) else mark.date()
 
 
-def _watermark(con, spec: Spec, entity: str):
-    return con.execute(f'SELECT max("date") FROM {spec.table} WHERE {spec.entity_col} = ?',
-                       [entity]).fetchone()[0]
+def _log(store: CsvStore, row: dict) -> None:
+    table = store.read_table("meta.load_log")
+    row = {key: "" if value is None else str(value) for key, value in row.items()}
+    exists = table["log_id"].astype(str).eq(str(row["log_id"]))
+    table = table.loc[~exists].astype(str)
+    table = pd.concat([table, pd.DataFrame([row])], ignore_index=True)
+    store.write_table("meta.load_log", table)
 
 
-def load_entity(con, source: str, entity: str, cfg: dict, run_id: str,
+def load_entity(store: CsvStore, source: str, entity: str, cfg: dict, run_id: str,
                 full_refresh: bool = False, sleep=time.sleep) -> str:
     spec, lcfg = SPECS[source], cfg["load"]
-    log_id, started = uuid.uuid4().hex, utcnow()
-    con.execute("""INSERT INTO meta.load_log (log_id, run_id, source, entity, started_at, status)
-                   VALUES (?, ?, ?, ?, ?, 'running')""", [log_id, run_id, source, entity, started])
+    log_id, started = uuid.uuid4().hex, pd.Timestamp.now(tz="UTC").tz_localize(None)
+    row = {
+        "log_id": log_id, "run_id": run_id, "source": source, "entity": entity,
+        "started_at": started, "finished_at": "", "status": "running", "date_from": "",
+        "date_to": "", "rows_fetched": 0, "rows_inserted": 0, "attempts": 0,
+        "error_message": "",
+    }
+    _log(store, row)
 
     status, error, attempts = "failed", None, 0
     fetched = inserted = 0
     start = end = None
     try:
-        mark = _watermark(con, spec, entity) if spec.incremental else None
+        mark = _watermark(store, spec, entity) if spec.incremental else None
         if spec.incremental:
             if mark is None or full_refresh:
                 start = str(lcfg["start_date"])
             else:
                 start = str(mark - timedelta(days=int(lcfg["overlap_days"])))
             end = lcfg.get("end_date")
-        before = _count(con, spec, entity)
+        before = _count(store, spec, entity)
         df, attempts = call_with_retry(lambda: spec.fetch(entity, start, end, cfg),
                                        lcfg["retry"], sleep=sleep)
         fetched = len(df)
         if fetched == 0 and spec.incremental and mark is None:
-            # пустой ответ при первой загрузке = неверный тикер/недоступный источник, а не «нет новых данных»
             raise ValueError("empty response on first load")
         if fetched:
-            _upsert(con, spec, df, load_id=run_id)
-        inserted = _count(con, spec, entity) - before
+            df = df.drop_duplicates(subset=list(spec.keys), keep="last").copy()
+            df["_load_id"] = run_id
+            df["_loaded_at"] = pd.Timestamp.now(tz="UTC").tz_localize(None)
+            store.upsert(spec.table, df, spec.keys, update=spec.on_conflict_update)
+        inserted = _count(store, spec, entity) - before
         status = "success" if fetched else "no_new_data"
     except RetryExhausted as exc:
         attempts, error = exc.attempts, repr(exc.last_exc)[:500]
     except Exception as exc:
         error = repr(exc)[:500]
 
-    con.execute("""UPDATE meta.load_log SET finished_at = ?, status = ?, date_from = ?, date_to = ?,
-                   rows_fetched = ?, rows_inserted = ?, attempts = ?, error_message = ?
-                   WHERE log_id = ?""",
-                [utcnow(), status, start, end if isinstance(end, (date, str)) else None,
-                 fetched, inserted, attempts, error, log_id])
+    row.update({
+        "finished_at": pd.Timestamp.now(tz="UTC").tz_localize(None),
+        "status": status, "date_from": start or "", "date_to": end or "",
+        "rows_fetched": fetched, "rows_inserted": inserted, "attempts": attempts,
+        "error_message": error or "",
+    })
+    _log(store, row)
     return status
 
 
-def run_load(con, cfg: dict, tickers: list, sources=None, full_refresh=False, sleep=time.sleep) -> dict:
-    """Один запуск загрузки. Сбой одной сущности не останавливает остальные."""
-    con.execute("""UPDATE meta.load_log SET status = 'aborted', finished_at = ?
-                   WHERE status = 'running'""", [utcnow()])      # хвосты упавших запусков
+def run_load(store: CsvStore, cfg: dict, tickers: list, sources=None,
+             full_refresh=False, sleep=time.sleep) -> dict:
+    """Run all selected entities; a single entity failure does not stop the rest."""
+    log = store.read_table("meta.load_log")
+    running = log["status"].eq("running")
+    if running.any():
+        log.loc[running, "status"] = "aborted"
+        log.loc[running, "finished_at"] = str(pd.Timestamp.now(tz="UTC").tz_localize(None))
+        store.write_table("meta.load_log", log)
     run_id = uuid.uuid4().hex[:12]
     summary = {"run_id": run_id, "success": 0, "no_new_data": 0, "failed": 0}
     for source in (sources or [s for s in SPECS if cfg["sources"][s]["enabled"]]):
         for entity in entities_for(source, cfg, tickers):
-            status = load_entity(con, source, entity, cfg, run_id, full_refresh, sleep)
+            status = load_entity(store, source, entity, cfg, run_id, full_refresh, sleep)
             summary[status] += 1
             sleep(cfg["load"]["pause_between_requests_sec"])
     return summary

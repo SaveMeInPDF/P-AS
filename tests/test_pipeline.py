@@ -1,10 +1,10 @@
-"""Тесты: чистые функции работают без сети и без DuckDB; интеграционные — при наличии duckdb."""
-import types
+"""Tests for source parsing, retry behavior, and CSV-backed pipeline integration."""
 
 import pandas as pd
 import pytest
 
 from pipeline.retry import RetryExhausted, call_with_retry
+from pipeline.storage import CsvStore
 from pipeline.sources import fred_macro, yfinance_news, yfinance_prices
 
 RETRY = {"attempts": 3, "base_delay_sec": 1, "rate_limit_delay_sec": 30}
@@ -57,8 +57,26 @@ def test_fred_parse_drops_missing_values():
     assert len(df) == 1 and df["value"].iloc[0] == 15.2
 
 
-# ---------- интеграционные (нужен duckdb) ----------
-duckdb = pytest.importorskip("duckdb")
+def test_csv_upsert_updates_prices_but_keeps_existing_news(tmp_path):
+    store = CsvStore(tmp_path)
+    store.initialize()
+    price = {"ticker": "AAPL", "date": "2026-01-02", "open": 1, "high": 2, "low": 1,
+             "close": 1.5, "adj_close": 1.4, "volume": 10, "_load_id": "first",
+             "_loaded_at": "2026-01-03"}
+    store.upsert("raw.prices", pd.DataFrame([price]), ("ticker", "date"))
+    changed_price = {**price, "close": 1.6, "_load_id": "second"}
+    store.upsert("raw.prices", pd.DataFrame([changed_price]), ("ticker", "date"))
+    assert len(store.read_table("raw.prices")) == 1
+    assert float(store.read_table("raw.prices").iloc[0]["close"]) == 1.6
+
+    news = {"ticker": "AAPL", "link": "https://example.test/1", "news_id": "1",
+            "pub_date": "2026-01-02", "title": "Original", "content": "", "publisher": "",
+            "_load_id": "first", "_loaded_at": "2026-01-03"}
+    store.upsert("raw.news", pd.DataFrame([news]), ("ticker", "link"), update=False)
+    changed_news = {**news, "title": "Updated"}
+    store.upsert("raw.news", pd.DataFrame([changed_news]), ("ticker", "link"), update=False)
+    saved_news = store.read_table("raw.news")
+    assert len(saved_news) == 1 and saved_news.iloc[0]["title"] == "Original"
 
 
 def _fake_prices(entity, start, end, cfg):
@@ -73,7 +91,6 @@ def _fake_prices(entity, start, end, cfg):
 def test_incremental_and_idempotent(monkeypatch, tmp_path):
     from pipeline import load
     from pipeline.config import load_config
-    from pipeline.db import connect, migrate
     from pipeline.transform import load_reference, run_transform
 
     cfg = load_config()
@@ -83,17 +100,20 @@ def test_incremental_and_idempotent(monkeypatch, tmp_path):
     monkeypatch.setitem(load.SPECS, "yfinance_prices",
                         load.SPECS["yfinance_prices"].__class__(**{**load.SPECS["yfinance_prices"].__dict__,
                                                                    "fetch": _fake_prices}))
-    con = connect(tmp_path / "t.duckdb")
-    migrate(con)
-    tickers = load_reference(con, cfg)[:2]
+    store = CsvStore(tmp_path)
+    store.initialize()
+    tickers = load_reference(store, cfg)[:2]
 
-    load.run_load(con, cfg, tickers, sleep=lambda s: None)
-    n1 = con.execute("SELECT count(*) FROM raw.prices").fetchone()[0]
-    load.run_load(con, cfg, tickers, sleep=lambda s: None)          # повторный запуск
-    n2 = con.execute("SELECT count(*) FROM raw.prices").fetchone()[0]
+    load.run_load(store, cfg, tickers, sources=["yfinance_prices"], sleep=lambda s: None)
+    n1 = len(store.read_table("raw.prices"))
+    load.run_load(store, cfg, tickers, sources=["yfinance_prices"], sleep=lambda s: None)
+    n2 = len(store.read_table("raw.prices"))
     assert n1 == n2 == 120
 
-    run_transform(con, cfg)
-    assert con.execute("SELECT count(*) FROM mart.mart_drawdown_monitor").fetchone()[0] == 30  # справочник целиком
-    assert con.execute("SELECT count(*) FROM mart.fact_price_daily").fetchone()[0] == 120
-    assert con.execute("SELECT count(*) FROM meta.load_log WHERE status = 'failed'").fetchone()[0] == 0
+    run_transform(store, cfg)
+    assert len(store.read_table("mart.mart_drawdown_monitor")) == 2
+    fact = store.read_table("mart.fact_price_daily")
+    assert len(fact) == 120
+    assert pd.isna(pd.to_numeric(fact.iloc[0]["ret_5d"], errors="coerce"))
+    assert float(fact.iloc[5]["ret_5d"]) == pytest.approx(0.05)
+    assert not store.read_table("meta.load_log")["status"].eq("failed").any()

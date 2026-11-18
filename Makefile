@@ -8,5 +8,7 @@ transform:
 	python -m pipeline run --stage transform
 status:
 	python -m pipeline status
+dashboard:
+	python -m streamlit run app.py
 test:
 	pytest -q
